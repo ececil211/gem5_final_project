@@ -1,0 +1,46 @@
+FILES
+=====
+- vector_add.c - the actual workload, includes both scalar and vector addition
+                 depending on compiler flags
+
+- Makefile     - the instructions to create the binaries
+                 NOTE: I initially noticed that there wasn't much of a difference
+                       between scalar and vector, and after some research I found
+                       that the compiler automatically vectorizes addition if it
+                       can, which makes sense. I added some flags to tell it not
+                       to do that.
+
+- vadd_rvv     - the binary compiled for RISC-V Vector Extension (used for benchmarking)
+
+- vadd_scalar  - the binary compiled for standard RISC-V (control case)
+
+NOTE: There are *_check versions of the above two files. These are versions of the
+      binaries that I built with functionality checking to make sure that the program
+      still worked any time I changed it. This adds overhead instructions which would
+      skew the result, so I left it out of the binaries we will actually use for the
+      research.
+
+- run_se.py    - the gem5 config script used to set up the architecture that we are
+                 testing. I tried to keep as much constant as I could, with the 
+                 exception of VLEN and ELEN (not sure if we'll use ELEN). I added
+                 some command line parsing to make the sweep easier.
+
+Example gem5 commands
+=====================
+To run the scalar binary and store the outputs in out_scalar
+
+ ../build/RISCV/gem5.opt -d out_scalar run_se.py vadd_scalar
+
+To run the RVV binary with a VLEN of 256 and store the output in out_rvv256
+
+ ../build/RISCV/gem5.opt -d out_rvv256 run_se.py vadd_rvv --vlen 256
+
+
+
+
+NOTE: To compile binaries with the RISC-V Vector instruction set, you need 
+      additional packages, and I don't have sudo on the ECE server, so I 
+      configured my local system to do all the building. I left the Makefile
+      and c file I used as the workload just in case anyone was curious.
+
+      -Ethan
