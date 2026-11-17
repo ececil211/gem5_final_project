@@ -1,0 +1,71 @@
+GROUP 21 - KEY FINDINGS (sweep run Nov 16 2026, gem5 v26.0, all numbers from results.csv)
+
+Setup
+  O3 core, 3 GHz, 32 KiB L1D, 256 KiB L2, DDR3-1600 (Ethan's run_se.py, unchanged).
+  102 runs: scalar + RVV at VLEN {128,256,512,1024} x LMUL {1,2,4,8} x 3 sizes x {vadd, FIR 16 taps}.
+  Sizes: N = 2048 (fits L1D), 16384 (fits L2), 65536 (spills to DRAM). fp32 elements.
+  Stats cover the kernel only (m5 reset/dump), after one warm-up pass. Every run does
+  1,048,576 elements total. All 18 CHECK builds printed PASS.
+
+1. Speedup vs VLEN at LMUL 1
+                      VLEN 128   256     512     1024
+  vadd  2K  (L1D)       2.65x   5.26x  10.37x  20.11x
+  vadd  16K (L2)        2.66x   2.67x   2.67x   2.67x
+  vadd  64K (DRAM)      1.08x   1.11x   1.59x   1.57x
+  FIR   2K  (L1D)       4.14x   8.27x  16.53x  32.99x
+  FIR   16K (L2)        4.19x   8.37x  16.74x  33.47x
+  FIR   64K (DRAM)      4.00x   7.11x   9.20x   9.93x
+  - In L1 speedup nearly doubles with every VLEN doubling (vadd +94% to +98%, FIR +100%).
+  - vadd at VLEN 1024 in L1: 23.7x fewer instructions (9.44M -> 0.40M), 10.0 elements/cycle
+    vs 0.50 scalar. IPC goes DOWN (4.49 -> 3.81) while speedup goes up, so IPC has to be
+    read next to instruction count.
+  - FIR touches each sample 16 times, so it stays compute-bound through L2 and only
+    flattens in DRAM.
+
+2. Spatial vs temporal, 16 fp32 per instruction (VLEN x LMUL = 512)
+                      512/m1   256/m2   128/m4   temporal vs spatial
+  vadd  2K  (L1D)     10.37x   10.37x    7.85x   24% slower
+  vadd  16K (L2)       2.67x    2.67x    2.67x   0%
+  vadd  64K (DRAM)     1.59x    1.10x    1.06x   33% slower (see note)
+  FIR   2K  (L1D)     16.53x   16.53x   12.05x   27% slower
+  FIR   16K (L2)      16.74x   16.71x   12.19x   27% slower
+  FIR   64K (DRAM)     9.20x    8.70x    8.26x   10% slower
+  - Same instruction count in all three, but 128/m4 commits 2.0x the micro-ops on vadd
+    (1.84x on FIR). vadd IPC: 3.90 at 512/m1 vs 2.96 at 128/m4.
+  - 256/m2 matches 512/m1 when compute-bound, the 8-wide pipeline absorbs 2 micro-ops.
+  - The gap goes to 0% when vadd is bus-bound in L2.
+  - Note on vadd in DRAM: the 33% gap is NOT micro-op overhead. A 512-bit store covers a
+    whole 64-byte cache line, so gem5 skips the fetch-before-write. L2 misses drop from
+    186 to 124 per 1000 elements (3 lines per 16 elements down to 2).
+
+3. Where scaling stops (LMUL 1, doubling VLEN gives < 10% more speedup)
+  vadd 2K  (L1D)   never, up to VLEN 1024
+  vadd 16K (L2)    at VLEN 128   (128 -> 256 gives +0.1%)
+  vadd 64K (DRAM)  at VLEN 128   (+2.7%; 256 -> 512 then gives +44% from the full-line
+                                  store effect above; 512 -> 1024 gives -1%)
+  FIR  2K, 16K     never, up to VLEN 1024
+  FIR  64K (DRAM)  at VLEN 512   (512 -> 1024 gives +7.9%)
+  Bottleneck at those points is memory, not the vector unit:
+  - vadd 16K: L1D miss rate 83% at VLEN 128 and 100% from 512 up, L2 miss rate ~0,
+    DRAM idle. Throughput is pinned at exactly 1.333 elements/cycle. The L1-L2 bus is
+    32 bytes wide, so a 64-byte line takes 3 cycles and that sets the pace. AMAT goes from
+    1.1 cycles (scalar) to 53.5 cycles (VLEN 512).
+  - vadd 64K: L2 miss rate 99%, DRAM at 7.7 to 8.5 GB/s (60 to 67% of the 12.8 GB/s
+    DDR3 peak). Scalar is already at 7.1 GB/s, so there is almost nothing left to gain.
+  - FIR 64K at VLEN 512: L2 miss rate 88%, DRAM 7.2 GB/s, AMAT 16 cycles (1.2 scalar).
+
+4. Full VLEN x LMUL grid (best cases)
+  vadd 2K: 71.7x at 1024/m8 (35.8 elements/cycle). FIR 2K: 143.7x at 1024/m8.
+  vadd 16K: 2.67x for every one of the 16 configs. vadd 64K: 1.06x to 1.60x.
+
+Things to say out loud if asked (model caveats)
+  - gem5's default O3 FU pool: 4 SIMD units, 4 shared load/store ports, every vector op
+    takes 1 cycle at any width. Scalar fadd is 2 cycles and scalar fmadd is 5. So wide
+    vectors are "free" in this model and FIR speedup per lane is slightly above 1
+    (4.14x with 4 lanes at VLEN 128). Real hardware would not scale this cleanly.
+  - Stride prefetchers are on for L1D and L2 (stdlib default), kept as is.
+  - L2 miss rate for the 2K runs is noise (1 to 3 L2 accesses total), the plot shows 0.
+  - L1D miss rate is per access, and a wider VLEN makes fewer, bigger accesses. Use the
+    per-1000-element columns (l1d_mpke, l2_mpke) to compare across VLEN.
+  - FIR vector tap loop is not unrolled (unrolled, LMUL 8 spills registers to the stack).
+    The scalar FIR is fully unrolled by clang.

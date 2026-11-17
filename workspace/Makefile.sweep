@@ -1,0 +1,70 @@
+# Sweep build: every workload/size/LMUL combo goes into bin/
+#   make -f Makefile.sweep        (measured binaries)
+#   make -f Makefile.sweep check  (correctness builds)
+# The original Makefile and vector_add.c are left as they were.
+
+CC      = clang-18
+TARGET  = --target=riscv64-linux-gnu
+SYSROOT = --gcc-toolchain=/usr --sysroot=/usr/riscv64-linux-gnu
+# -I../include is for gem5/m5ops.h
+CFLAGS  = $(TARGET) $(SYSROOT) -fuse-ld=lld-18 -O3 -static -mabi=lp64d -I../include
+
+# Compiler is going to want to automatically vectorize scalar, stop that
+NOVEC   = -fno-vectorize -fno-slp-vectorize
+
+# the m5 reset/dump stats instructions, straight from gem5's m5 util
+M5OP    = ../util/m5/src/abi/riscv/m5op.S
+
+WORKLOADS = vadd fir
+# fits L1D, fits L2, spills to DRAM
+SIZES     = 2048 16384 65536
+LMULS     = 1 2 4 8
+# odd size for the check builds so the tail (vl < vlmax) gets tested too
+CHECK_N   = 1000
+
+SRC_vadd = vadd_sweep.c
+SRC_fir  = fir.c
+
+BIN = bin
+
+SCALAR_BINS = $(foreach w,$(WORKLOADS),$(foreach n,$(SIZES),$(BIN)/$(w)_scalar_N$(n)))
+RVV_BINS    = $(foreach w,$(WORKLOADS),$(foreach n,$(SIZES),$(foreach l,$(LMULS),$(BIN)/$(w)_rvv_m$(l)_N$(n))))
+CHECK_BINS  = $(foreach w,$(WORKLOADS),$(BIN)/$(w)_scalar_check $(foreach l,$(LMULS),$(BIN)/$(w)_rvv_m$(l)_check))
+
+all: $(SCALAR_BINS) $(RVV_BINS)
+
+check: $(CHECK_BINS)
+
+$(BIN):
+	mkdir -p $(BIN)
+
+# one rule per workload/size/lmul, generated below
+define SCALAR_RULE
+$(BIN)/$(1)_scalar_N$(2): $(SRC_$(1)) $(M5OP) | $(BIN)
+	$(CC) $(CFLAGS) $(NOVEC) -march=rv64gc -DN=$(2) $(SRC_$(1)) $(M5OP) -o $$@
+endef
+
+define RVV_RULE
+$(BIN)/$(1)_rvv_m$(3)_N$(2): $(SRC_$(1)) $(M5OP) | $(BIN)
+	$(CC) $(CFLAGS) -march=rv64gcv -DVECTOR_BINARY -DN=$(2) -DLMUL=$(3) $(SRC_$(1)) $(M5OP) -o $$@
+endef
+
+define CHECK_RULE
+$(BIN)/$(1)_scalar_check: $(SRC_$(1)) $(M5OP) | $(BIN)
+	$(CC) $(CFLAGS) $(NOVEC) -march=rv64gc -DCHECK -DN=$(CHECK_N) $(SRC_$(1)) $(M5OP) -o $$@
+endef
+
+define CHECK_RVV_RULE
+$(BIN)/$(1)_rvv_m$(2)_check: $(SRC_$(1)) $(M5OP) | $(BIN)
+	$(CC) $(CFLAGS) -march=rv64gcv -DVECTOR_BINARY -DCHECK -DN=$(CHECK_N) -DLMUL=$(2) $(SRC_$(1)) $(M5OP) -o $$@
+endef
+
+$(foreach w,$(WORKLOADS),$(foreach n,$(SIZES),$(eval $(call SCALAR_RULE,$(w),$(n)))))
+$(foreach w,$(WORKLOADS),$(foreach n,$(SIZES),$(foreach l,$(LMULS),$(eval $(call RVV_RULE,$(w),$(n),$(l))))))
+$(foreach w,$(WORKLOADS),$(eval $(call CHECK_RULE,$(w))))
+$(foreach w,$(WORKLOADS),$(foreach l,$(LMULS),$(eval $(call CHECK_RVV_RULE,$(w),$(l)))))
+
+clean:
+	rm -rf $(BIN)
+
+.PHONY: all check clean

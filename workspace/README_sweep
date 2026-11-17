@@ -1,0 +1,20 @@
+SWEEP FILES (added next to the original vector_add.c / Makefile, which are unchanged)
+=====================================================================================
+- vadd_sweep.c    - vector add with -DN (size) and -DLMUL (1/2/4/8) flags. Does one
+                    warm up pass, then m5 reset_stats / dump_stats around the kernel
+                    so the first stats block is the kernel only.
+- fir.c           - 16 tap FIR, scalar and RVV, same flags.
+- Makefile.sweep  - builds every workload/size/LMUL combo into bin/ (needs clang-18,
+                    lld-18 and the riscv64 sysroot, same as the original Makefile).
+                      make -f Makefile.sweep          measured binaries
+                      make -f Makefile.sweep check    correctness builds (print PASS)
+- run_sweep.sh    - runs everything through run_se.py, one output dir per config
+                    (results/out_<workload>_N<size>_vlen<vlen>_m<lmul>).
+                      ./run_sweep.sh ../build/RISCV/gem5.opt 16 check
+                      nohup ./run_sweep.sh ../build/RISCV/gem5.opt 16 > sweep.log 2>&1 &
+- parse_stats.py  - results/ -> results.csv (prints the gem5 stat names it reads)
+- make_plots.py   - results.csv -> plots/*.png
+- findings.txt    - summary of the numbers
+
+NOTE: needs gem5 v26.0. run_se.py does not run on v25.1 (SimpleProcessor has no
+      clk_freq argument there).
