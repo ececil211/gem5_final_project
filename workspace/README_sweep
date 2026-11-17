@@ -18,3 +18,8 @@ SWEEP FILES (added next to the original vector_add.c / Makefile, which are uncha
 
 NOTE: needs gem5 v26.0. run_se.py does not run on v25.1 (SimpleProcessor has no
       clk_freq argument there).
+
+PRESENTATION
+============
+- Group_21_Project_Presentation_v2.pptx - the slides for the 5 minute video, with the
+                    plots and numbers from this sweep filled in (speaker notes included).
